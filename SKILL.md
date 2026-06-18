@@ -5,7 +5,9 @@ description: Use when generating or editing images with the Vanilla API, includi
 
 # Vanilla API Image Skill
 
-Check that `VANILLA_API_IMAGE` is set before generating or editing images. If it is missing, stop and ask the user to configure it.
+When the user has just installed this skill or starts a new thread intending to use it, proactively check whether `VANILLA_API_IMAGE` is configured. If it is missing, ask the user for their Vanilla API image key before doing any image work. Do not ask them to paste the key into a generated file or commit it to the repository; tell them to store it as an environment variable named `VANILLA_API_IMAGE`.
+
+Before every generation or edit request, check that `VANILLA_API_IMAGE` is set. If it is missing, stop and ask the user to configure it.
 
 Use `scripts/vanilla_api_image.py` for all image operations.
 
