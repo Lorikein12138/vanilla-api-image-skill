@@ -5,11 +5,9 @@ description: Use when generating or editing images with the Vanilla API, includi
 
 # Vanilla API Image Skill
 
-When the user has just installed this skill or starts a new thread intending to use it, proactively check whether `VANILLA_API_IMAGE` is configured. If it is missing, ask the user for their Vanilla API image key before doing any image work. Do not ask them to paste the key into a generated file or commit it to the repository; tell them to store it as an environment variable named `VANILLA_API_IMAGE`.
+Before every image request, check `VANILLA_API_IMAGE`. If missing, stop and ask the user to store their Vanilla API image key in that environment variable. Never write or commit the key.
 
-Before every generation or edit request, check that `VANILLA_API_IMAGE` is set. If it is missing, stop and ask the user to configure it.
-
-Use `scripts/vanilla_api_image.py` for all image operations.
+Use `scripts/vanilla_api_image.py` for all image operations. Pass the user's prompt directly unless they ask for prompt rewriting.
 
 ## Commands
 
@@ -33,12 +31,10 @@ python scripts/vanilla_api_image.py sizes
 
 ## Options
 
-- `--prompt`: Required generation or edit prompt.
-- `--image`: Required for `edit`; repeat it for multiple input images.
-- `--mask`: Optional mask image for `edit`.
-- `--size`: Choose `1k`, `2k`, or `4k`.
-- `--ratio`: Choose `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `16:9`, or `9:16`.
+- `--prompt`: required generation/edit prompt.
+- `--image`: required for `edit`; repeat for multiple inputs.
+- `--mask`: optional edit mask.
+- `--size`: `1k`, `2k`, `3k`, `4k`.
+- `--ratio`: `1:1`, `1:2`, `2:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `16:9`, `9:16`.
 
-Generated images save in `outputs/`, and the script prints absolute paths for each saved file.
-
-After generating images, send the image file paths back to the user. Always use full absolute paths.
+Images save in `outputs/`; the script prints absolute paths. Return those full paths to the user.
