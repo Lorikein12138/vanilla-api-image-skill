@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-BASE_URL = "https://api.lorikein.cn"
+BASE_URL = "https://api.lorikein.com"
 GENERATIONS_ENDPOINT = "/v1/images/generations"
 EDITS_ENDPOINT = "/v1/images/edits"
 DEFAULT_MODEL = "gpt-image-2.5-sunburst"
