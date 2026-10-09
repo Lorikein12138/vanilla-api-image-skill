@@ -19,17 +19,11 @@ DEFAULT_QUALITY = "auto"
 TIMEOUT_SECONDS = 600
 USER_AGENT = "vanilla-api-image-skill/1.1"
 
-GPT_IMAGE_2_MODELS = (
-    "gpt-image-2",
-    "gpt-image-2-2026-04-21",
-)
 GPT_IMAGE_25_MODELS = (
-    "gpt-image-2.5-flare",
-    "gpt-image-2.5-flare-2026-09-08",
     "gpt-image-2.5-sunburst",
-    "gpt-image-2.5-sunburst-2026-09-08",
+    "gpt-image-2.5-flare",
 )
-SUPPORTED_MODELS = GPT_IMAGE_2_MODELS + GPT_IMAGE_25_MODELS
+SUPPORTED_MODELS = GPT_IMAGE_25_MODELS + ("gpt-image-2",)
 
 BASE_QUALITIES = ("auto", "low", "medium", "high")
 GPT_IMAGE_25_QUALITIES = ("xhigh", "max")

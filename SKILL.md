@@ -31,9 +31,9 @@ python scripts/vanilla_api_image.py sizes
 
 ## Models
 
-- `gpt-image-2.5-sunburst` (default): higher-precision GPT Image 2.5 model, strongest at detail-preserving edits. Snapshot `gpt-image-2.5-sunburst-2026-09-08`.
-- `gpt-image-2.5-flare`: faster GPT Image 2.5 model. Snapshot `gpt-image-2.5-flare-2026-09-08`.
-- `gpt-image-2`: previous generation, snapshot `gpt-image-2-2026-04-21`.
+- `gpt-image-2.5-sunburst` (default): higher-precision GPT Image 2.5 model, strongest at detail-preserving edits.
+- `gpt-image-2.5-flare`: faster GPT Image 2.5 model.
+- `gpt-image-2`: previous generation.
 
 Use the default model unless the user names a model or asks for speed (flare).
 
