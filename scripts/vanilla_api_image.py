@@ -6,19 +6,23 @@ import math
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 BASE_URL = "https://api.lorikein.com"
 GENERATIONS_ENDPOINT = "/v1/images/generations"
 EDITS_ENDPOINT = "/v1/images/edits"
-DEFAULT_MODEL = "gpt-image-2.5-sunburst"
-DEFAULT_QUALITY = "auto"
+TASKS_ENDPOINT = "/v1/images/tasks"
+DEFAULT_MODEL = "gpt-image-2.6-sunburst"
 TIMEOUT_SECONDS = 600
-USER_AGENT = "vanilla-api-image-skill/1.2"
+POLL_INTERVAL_SECONDS = 3
+TASK_TIMEOUT_SECONDS = 30 * 60
+USER_AGENT = "vanilla-api-image-skill/1.3"
 
 GPT_IMAGE_25_MODELS = (
     "gpt-image-2.5-sunburst",
@@ -153,6 +157,8 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError(f"--n must be between 1 and {MAX_N}")
     if args.partial_images is not None and not 0 <= args.partial_images <= MAX_PARTIAL_IMAGES:
         raise ValueError(f"--partial-images must be between 0 and {MAX_PARTIAL_IMAGES}")
+    if args.asynchronous and args.partial_images is not None:
+        raise ValueError("--async cannot be combined with --partial-images")
     if args.output_compression is not None:
         if not 0 <= args.output_compression <= 100:
             raise ValueError("--output-compression must be between 0 and 100")
@@ -232,7 +238,7 @@ def read_json_response(resp) -> dict:
     try:
         return json.loads(body)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Failed to parse JSON response. Raw body: {body}") from exc
+        raise RuntimeError("Vanilla API returned invalid JSON") from exc
 
 
 def raise_for_event_error(event: dict) -> None:
@@ -253,7 +259,7 @@ def read_event_stream(resp) -> list[dict]:
         try:
             event = json.loads(data)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Failed to parse stream event: {data}") from exc
+            raise RuntimeError("Vanilla API returned an invalid stream event") from exc
         raise_for_event_error(event)
         events.append(event)
 
@@ -279,11 +285,20 @@ def http_error_message(error: urllib.error.HTTPError) -> str:
     return f"request failed with HTTP {error.code}: {body}"
 
 
-def send_request(url: str, api_key: str, body: bytes, content_type: str, stream: bool) -> dict | list[dict]:
-    headers = request_headers(api_key, stream) | {"Content-Type": content_type}
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+def send_request(
+    url: str,
+    api_key: str,
+    body: bytes | None = None,
+    content_type: str | None = None,
+    stream: bool = False,
+    timeout: float = TIMEOUT_SECONDS,
+) -> dict | list[dict]:
+    headers = request_headers(api_key, stream)
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    request = urllib.request.Request(url, data=body, headers=headers, method="GET" if body is None else "POST")
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
             # Fall back to a plain JSON body when the server ignores `stream`.
             if stream and "text/event-stream" in resp.headers.get("Content-Type", ""):
                 return read_event_stream(resp)
@@ -295,6 +310,31 @@ def send_request(url: str, api_key: str, body: bytes, content_type: str, stream:
 def post_json(url: str, api_key: str, payload: dict) -> dict | list[dict]:
     body = json.dumps(payload).encode("utf-8")
     return send_request(url, api_key, body, "application/json", bool(payload.get("stream")))
+
+
+def wait_for_task(task_id: str, api_key: str) -> dict:
+    if not isinstance(task_id, str) or not re.fullmatch(r"imgtask_[A-Za-z0-9_-]+", task_id):
+        raise ValueError("invalid image task ID")
+    url = build_url(f"{TASKS_ENDPOINT}/{task_id}")
+    deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
+    while (remaining := deadline - time.monotonic()) > 0:
+        task = send_request(url, api_key, timeout=min(30, remaining))
+        status = task.get("status")
+        if status == "completed":
+            result = task.get("result")
+            if isinstance(result, dict) and result.get("data"):
+                return result
+            if task.get("image_url"):
+                return {"data": [{"url": task["image_url"]}]}
+            raise RuntimeError(f"image task {task_id} completed without an image")
+        if status == "failed":
+            error = task.get("error")
+            message = error.get("message") if isinstance(error, dict) else error
+            raise RuntimeError(f"image task {task_id} failed: {message or 'unknown error'}")
+        if status != "processing":
+            raise RuntimeError(f"image task {task_id} returned unexpected status {status!r}")
+        time.sleep(min(POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
+    raise RuntimeError(f"timed out waiting for image task {task_id}; use fetch to check it again")
 
 
 def form_value(value) -> str:
@@ -418,7 +458,7 @@ def decode_or_download_image(item: dict, destination: Path) -> None:
     raise RuntimeError("image result did not include b64_json or url")
 
 
-def save_items(items: list[dict], stem: str, default_format: str, label: str = "") -> list[Path]:
+def save_items(items: list[dict], stem: str, default_format: str | None, label: str = "") -> list[Path]:
     out_dir = output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -426,8 +466,12 @@ def save_items(items: list[dict], stem: str, default_format: str, label: str = "
     multiple = len(items) > 1
     for idx, item in enumerate(items, start=1):
         image_format = item.get("output_format") or default_format
+        suffix = OUTPUT_SUFFIXES.get(image_format)
+        if suffix is None:
+            url_suffix = Path(urlsplit(item.get("url") or "").path).suffix.lower()
+            suffix = url_suffix if url_suffix in (*OUTPUT_SUFFIXES.values(), ".jpeg") else ".png"
         name = f"{stem}{label}_{idx:02d}" if multiple else f"{stem}{label}"
-        destination = unique_path(out_dir, name, OUTPUT_SUFFIXES.get(image_format, ".png"))
+        destination = unique_path(out_dir, name, suffix)
         decode_or_download_image(item, destination)
         saved_paths.append(destination)
     return saved_paths
@@ -448,8 +492,22 @@ def save_result(result: dict | list[dict], requested_format: str | None) -> list
     data = result.get("data")
     if not isinstance(data, list) or not data:
         raise RuntimeError("image result did not include a non-empty data list")
-    default_format = result.get("output_format") or requested_format or "png"
+    default_format = result.get("output_format") or requested_format
     return save_items(data, stem, default_format)
+
+
+def finish_request(result: dict | list[dict], args: argparse.Namespace, api_key: str) -> list[Path]:
+    if args.asynchronous:
+        task_id = result.get("task_id") or result.get("id")
+        if not task_id:
+            raise RuntimeError("Vanilla API did not return an image task ID")
+        print(f"task: {task_id}", file=sys.stderr, flush=True)
+        result = wait_for_task(task_id, api_key)
+    return save_result(result, args.output_format)
+
+
+def fetch_task(args: argparse.Namespace) -> list[Path]:
+    return save_result(wait_for_task(args.task_id, require_api_key()), None)
 
 
 def generate_image(args: argparse.Namespace) -> list[Path]:
@@ -464,8 +522,9 @@ def generate_image(args: argparse.Namespace) -> list[Path]:
         if args.svg_reasoning_effort is not None:
             payload["svg"]["reasoning"] = {"effort": args.svg_reasoning_effort}
     api_key = require_api_key()
-    result = post_json(build_url(GENERATIONS_ENDPOINT), api_key, payload)
-    return save_result(result, args.output_format)
+    endpoint = GENERATIONS_ENDPOINT + ("/async" if args.asynchronous else "")
+    result = post_json(build_url(endpoint), api_key, payload)
+    return finish_request(result, args, api_key)
 
 
 def edit_image(args: argparse.Namespace) -> list[Path]:
@@ -484,8 +543,9 @@ def edit_image(args: argparse.Namespace) -> list[Path]:
 
     data = common_options(args)
     api_key = require_api_key()
-    result = post_multipart(build_url(EDITS_ENDPOINT), api_key, data, images, edit_layers)
-    return save_result(result, args.output_format)
+    endpoint = EDITS_ENDPOINT + ("/async" if args.asynchronous else "")
+    result = post_multipart(build_url(endpoint), api_key, data, images, edit_layers)
+    return finish_request(result, args, api_key)
 
 
 def print_size_table() -> None:
@@ -500,7 +560,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", choices=SUPPORTED_MODELS, default=DEFAULT_MODEL, help=f"image model (default: {DEFAULT_MODEL})")
     parser.add_argument("--size", required=True, help="1k, 2k, 3k, 4k, auto, or explicit WIDTHxHEIGHT for GIF")
     parser.add_argument("--ratio", type=normalize_ratio, help="aspect ratio; required with 1k, 2k, 3k, and 4k")
-    parser.add_argument("--quality", choices=SUPPORTED_QUALITIES, default=DEFAULT_QUALITY, help="xhigh and max require a GPT Image 2.5 or 2.6 model")
+    parser.add_argument("--quality", choices=SUPPORTED_QUALITIES, help="API default: auto; xhigh and max require GPT Image 2.5 or 2.6")
     parser.add_argument("--complexity", choices=SUPPORTED_COMPLEXITIES, help="planning complexity for GPT Image 2.6")
     parser.add_argument("--n", type=int, help=f"number of images, 1-{MAX_N}")
     parser.add_argument("--background", choices=SUPPORTED_BACKGROUNDS, help="transparent requires png or webp output")
@@ -509,6 +569,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--frame-count", type=int, help="2-16 frames for GIF output")
     parser.add_argument("--frame-duration-ms", type=int, help="delay of at least 20 ms per GIF frame")
     parser.add_argument("--partial-images", type=int, help=f"stream the response and save 0-{MAX_PARTIAL_IMAGES} partial images")
+    parser.add_argument("--async", dest="asynchronous", action="store_true", help="submit once and poll the Vanilla API task")
     parser.add_argument("--user", help="end-user identifier for abuse monitoring")
 
 
@@ -520,6 +581,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     table_parser = subparsers.add_parser("sizes", help="print the resolved size mapping table")
     table_parser.set_defaults(func=lambda args: print_size_table())
+
+    fetch_parser = subparsers.add_parser("fetch", help="wait for and download an existing asynchronous image task")
+    fetch_parser.add_argument("task_id", help="task ID printed when submitted; use the same API key")
+    fetch_parser.set_defaults(func=fetch_task)
 
     generate_parser = subparsers.add_parser("generate", help="create an image from text")
     generate_parser.add_argument("--prompt", required=True, help="text prompt")
